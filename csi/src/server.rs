@@ -181,7 +181,7 @@ async fn main() -> Result<(), String> {
         )
         .get_matches();
 
-    let node_name = normalize_hostname(matches.value_of("node-name").unwrap());
+    let node_name = matches.value_of("node-name").unwrap();
     let endpoint = matches.value_of("grpc-endpoint").unwrap();
     let csi_socket = matches
         .value_of("csi-socket")
