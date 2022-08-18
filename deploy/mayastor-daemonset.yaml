@@ -33,7 +33,7 @@ spec:
         command: ['sh', '-c', 'until nc -vz nats 4222; do echo "Waiting for message bus..."; sleep 1; done;']
       containers:
       - name: mayastor
-        image: mayadata/mayastor:v1.0.2
+        image: mayadata/mayastor:etfw-reading-1.0.2
         imagePullPolicy: IfNotPresent
         env:
         - name: RUST_LOG
@@ -60,6 +60,7 @@ spec:
         - "-y/var/local/mayastor/config.yaml"
         - "-l1,2"
         - "-pmayastor-etcd"
+        - "-Tens1f0"
         command:
         - mayastor
         securityContext:

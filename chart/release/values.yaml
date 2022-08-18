@@ -12,6 +12,6 @@ etcd:
   auth:
     rbac:
       enabled: false
-  replicaCount: 3
+  replicaCount: 1
 
 mayastorLogLevel: info

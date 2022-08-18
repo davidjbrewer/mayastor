@@ -579,6 +579,7 @@ pipeline {
             branch 'master'
             branch 'release/*'
             branch 'release-*'
+            branch 'etfw-reading-1.0.2'
             branch 'develop'
           }
         }
@@ -591,7 +592,7 @@ pipeline {
         withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD')]) {
           sh 'echo $PASSWORD | docker login -u $USERNAME --password-stdin'
         }
-        sh './scripts/release.sh'
+        sh './scripts/release.sh --alias-tag etfw-reading-1.0.2'
       }
       post {
         always {

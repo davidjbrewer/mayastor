@@ -58,6 +58,7 @@ spec:
         - "-y/var/local/mayastor/config.yaml"
         - "-l{{ include "mayastorCpuSpec" . }}"
         - "-pmayastor-etcd"
+        - "-Tens1f0"
         command:
         - mayastor
         securityContext:
