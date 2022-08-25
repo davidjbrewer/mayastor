@@ -10,6 +10,7 @@ use mayastor::{
     bdev::util::uring,
     core::{
         device_monitor,
+        reactor_monitor_loop,
         runtime,
         MayastorCliArgs,
         MayastorEnvironment,
@@ -54,6 +55,7 @@ fn start_tokio_runtime(args: &MayastorCliArgs) {
 
             PersistentStore::init(persistent_store_endpoint).await;
             runtime::spawn(device_monitor());
+            runtime::spawn(reactor_monitor_loop());
 
             futures.push(
                 grpc::MayastorGrpcServer::run(grpc_address, rpc_address)

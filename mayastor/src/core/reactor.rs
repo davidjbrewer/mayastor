@@ -36,6 +36,7 @@ use std::{
     os::raw::c_void,
     pin::Pin,
     slice::Iter,
+    sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -57,7 +58,7 @@ use spdk_rs::libspdk::{
     SPDK_THREAD_OP_NEW,
 };
 
-use crate::core::{CoreError, Cores, Mthread};
+use crate::core::{diagnostics::diagnose_reactor, CoreError, Cores, Mthread};
 use nix::errno::Errno;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -527,6 +528,100 @@ impl Future for &'static Reactor {
                 }
                 cx.waker().wake_by_ref();
                 Poll::Pending
+            }
+        }
+    }
+}
+
+/// Metadata for every reactor being monitored by the reactor monitor.
+struct ReactorRecord {
+    frozen: bool,
+    reactor: &'static Reactor,
+    reactor_tick: &'static AtomicU64,
+    core: u32,
+}
+
+/// Maximum number of heartbeats a reactor is allowed to miss
+/// before it is classified as frozen.
+const MAX_MISSED_HEARTBEATS: u64 = 3;
+
+/// Monitor health for all reactors: all available reactors are constantly
+/// monitored for liveness.
+pub async fn reactor_monitor_loop() {
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    let mut tick: u64 = 0;
+    let mut reactor_state: Vec<ReactorRecord> =
+        Vec::with_capacity(Cores::count().id() as usize);
+    static REACTOR_TICKS: OnceCell<Vec<AtomicU64>> = OnceCell::new();
+
+    info!(
+        cores = Cores::count().id(),
+        "Starting reactor health monitor loop"
+    );
+
+    // Intialize shared counters for heartbeat futures sent to reactors.
+    let heartbeat_ticks = REACTOR_TICKS.get_or_init(|| {
+        std::iter::repeat_with(|| AtomicU64::new(0))
+            .take(Cores::count().id() as usize)
+            .collect::<Vec<AtomicU64>>()
+    });
+
+    // Initialize reactor records.
+    for (id, core) in Cores::count().into_iter().enumerate() {
+        let reactor = Reactors::get_by_core(core)
+            .unwrap_or_else(|| panic!("Can't get reactor for core {}", core));
+        let reactor_tick =
+            heartbeat_ticks.get(id).expect("Failed to get tick item");
+
+        reactor_state.push(ReactorRecord {
+            frozen: false,
+            reactor,
+            reactor_tick,
+            core,
+        });
+    }
+
+    loop {
+        // Schedule heartbeat futures on every reactor, ignoring reactors
+        // which are already frozen.
+        for (id, r) in reactor_state.iter().enumerate() {
+            // For frozen reactors there are already N scheduled heartbeat
+            // futures that haven't resolved yet, so maintain exactly this delta
+            // by just adjusting the tick counter.
+            if r.frozen {
+                heartbeat_ticks[id].fetch_add(1, Ordering::Relaxed);
+            } else {
+                // Send heartbeat future to the reactor.
+                r.reactor.send_future(async move {
+                    heartbeat_ticks[id].fetch_add(1, Ordering::Relaxed);
+                });
+            }
+        }
+
+        // Wait till heartbeat check interval elapses and check ticks
+        // reported by every reactor.
+        interval.tick().await;
+        tick += 1;
+
+        for r in &mut reactor_state {
+            if r.frozen {
+                // Check if all pending heartbeat futures have resolved:
+                // in such a case heartbeat counter adds to the correct
+                // value and mark the reactor as alive.
+                if tick - r.reactor_tick.load(Ordering::Relaxed) == 0 {
+                    info!(core = r.core, "Reactor is healthy again");
+                    r.frozen = false;
+                }
+            } else {
+                // Reactor didn't respond within allowed number of intervals,
+                // assume it is frozen.
+                if tick - r.reactor_tick.load(Ordering::Relaxed)
+                    >= MAX_MISSED_HEARTBEATS
+                    && !r.frozen
+                {
+                    r.frozen = true;
+                    diagnose_reactor(r.reactor);
+                }
             }
         }
     }
