@@ -12,6 +12,7 @@ use std::{
     pin::Pin,
 };
 
+use crossbeam::atomic::AtomicCell;
 use futures::channel::oneshot;
 use serde::Serialize;
 use snafu::ResultExt;
@@ -248,6 +249,8 @@ pub struct Nexus<'n> {
     /// TODO
     #[allow(dead_code)]
     pub(super) injections: Injections,
+    /// Flag to control shutdown from I/O path.
+    pub(crate) shutdown_requested: AtomicCell<bool>,
     /// Prevent auto-Unpin.
     _pin: PhantomPinned,
 }
@@ -353,6 +356,7 @@ impl<'n> Nexus<'n> {
             nexus_uuid: Default::default(),
             event_sink: None,
             injections: Injections::new(),
+            shutdown_requested: AtomicCell::new(false),
             _pin: Default::default(),
         };
 

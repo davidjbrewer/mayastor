@@ -11,7 +11,7 @@ use spdk_rs::{
     BdevIo,
 };
 
-use super::{Nexus, NexusChannel, Reason, NEXUS_PRODUCT_ID};
+use super::{nexus_lookup_mut, Nexus, NexusChannel, Reason, NEXUS_PRODUCT_ID};
 
 use crate::core::{
     BlockDevice,
@@ -26,6 +26,7 @@ use crate::core::{
     LvolFailure,
     Mthread,
     NvmeStatus,
+    Reactors,
 };
 
 /// TODO
@@ -461,6 +462,36 @@ impl<'n> NexusBio<'n> {
         result
     }
 
+    /// Initiate shutdown of the nexus associated with this BIO request.
+    fn shutdown_nexus(&mut self) {
+        if self
+            .channel_mut()
+            .nexus_mut()
+            .shutdown_requested
+            .compare_exchange(false, true)
+            .is_ok()
+        {
+            let nexus_name =
+                self.channel_mut().nexus_mut().nexus_name().to_owned();
+            warn!(
+                nexus_name,
+                "Nexus shutdown initiated in response to reservation conflict"
+            );
+
+            Reactors::master().send_future(async move {
+                if let Some(nexus) = nexus_lookup_mut(&nexus_name) {
+                    if let Err(e) = nexus.shutdown().await {
+                        error!(
+                            nexus_name,
+                            error=%e,
+                            "Failed to shutdown nexus"
+                        );
+                    }
+                }
+            });
+        }
+    }
+
     /// TODO
     fn retire_device(
         &mut self,
@@ -513,18 +544,34 @@ impl<'n> NexusBio<'n> {
             return;
         }
 
-        let retry = matches!(
+        // Reservation conflicts should trigger shutdown of the nexus but
+        // replica should not be retired.
+        if matches!(
             status,
             IoCompletionStatus::NvmeError(NvmeStatus::Generic(
-                GenericStatusCode::AbortedSubmissionQueueDeleted
+                GenericStatusCode::ReservationConflict
             ))
-        );
+        ) {
+            warn!(
+                nexus = self.channel_mut().nexus_mut().nexus_name(),
+                replica=child.device_name(),
+                "Reservation conflict on replica device, initiating nexus shutdown"
+            );
+            self.shutdown_nexus();
+        } else {
+            self.retire_device(&child.device_name(), status);
 
-        self.retire_device(&child.device_name(), status);
+            let retry = matches!(
+                status,
+                IoCompletionStatus::NvmeError(NvmeStatus::Generic(
+                    GenericStatusCode::AbortedSubmissionQueueDeleted
+                ))
+            );
 
-        // if the IO was failed because of retire, resubmit the IO
-        if retry {
-            return self.ok_checked();
+            // if the IO was failed because of retire, resubmit the IO
+            if retry {
+                return self.ok_checked();
+            }
         }
 
         self.fail_checked();
